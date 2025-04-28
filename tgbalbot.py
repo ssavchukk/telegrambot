@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 
 TOKEN = input("Token: ").strip()
 if not TOKEN:
-    print("Token can not be empty ")
+    print("Token can not be empty")
     exit(1)
 
 # Логирование
@@ -16,27 +16,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Функция для очистки текста от скрытых символов
-
 
 def clean_text(text):
     return ''.join(c for c in text if not unicodedata.category(c).startswith('Cf'))
 
-# Основной обработчик сообщений
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text.strip()
-    user_id = update.message.from_user.id  # ID отправителя
-    username = update.message.from_user.username or "Unknown"  # Имя отправителя
-    chat_id = update.message.chat.id  # ID чата
-    logger.info(
-        f"Сообщение от user_id={user_id}, username={username}, chat_id={chat_id}: {message_text[:50]}...")
-
-    # Игнорируем сообщения с рекламой
-    if any(keyword in message_text.lower() for keyword in ["jetonvpnbot", "youtube", "instagram", "vpn"]):
-        logger.info(f"Пропущено рекламное сообщение: {message_text[:50]}...")
-        return
+    logger.info(f"Получено сообщение: {message_text[:50]}...")
 
     if re.match(r'(?i)^\s*.*?баланс.*?', message_text):
         await process_balance_message(update, message_text)
@@ -45,11 +32,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif message_text.lower().startswith("цена") and update.message.reply_to_message:
         await process_price_message(update, message_text)
     else:
-        await update.message.reply_text(
-            "Сообщение не распознано."
-        )
-
-# Обработка сообщений с балансом
+        await update.message.reply_text("Сообщение не распознано.")
 
 
 async def process_balance_message(update: Update, message_text: str):
@@ -62,68 +45,71 @@ async def process_balance_message(update: Update, message_text: str):
         logger.error(f"Ошибка в process_balance_message: {e}")
         await update.message.reply_text("Ошибка при обработке баланса.")
 
-# Обработка сообщений с розыгрышем
-
 
 async def process_lottery_message(update: Update, message_text: str):
     try:
         # Очистка текста от скрытых символов
         cleaned_message = clean_text(message_text)
 
-        # Найдём все имена участников
-        names = re.findall(r'@⁨~([^⁩\n]+)', cleaned_message)
-        if not names:
-            names = re.findall(r'@~([^ \n-]+)', cleaned_message)
+        # Ищем все имена участников (например, @⁨~Имя⁩ или @~Имя)
+        matches = re.findall(
+            r'(@⁨~.*?⁩|@~[^\n]*?)(?=\s*(?:\n|$))', cleaned_message, re.DOTALL)
 
-        if not names:
+        if not matches:
             await update.message.reply_text("Не удалось найти имена участников.")
             return
 
-        # Подсчёт количества каждого участника
+        # Подсчет количества для каждого уникального участника и проверка галочек
         name_counts = {}
-        for name in names:
-            name = name.strip()
+        name_checkmarks = {}
+        for match in matches:
+            name = match.strip()
+            # Убираем лишние пробелы внутри
+            name = re.sub(r'\s+', ' ', name)
             name_counts[name] = name_counts.get(name, 0) + 1
+            # Проверяем, есть ли галочка в исходной строке после имени
+            match_idx = message_text.find(match)
+            if match_idx != -1:
+                next_text = message_text[match_idx + len(match):]
+                name_checkmarks[name] = '✅' in next_text[:10]
 
-        # Формируем строку для второго сообщения (с подсчётом)
+        # Формируем строку для подсчета (сохраняем галочки из исходного текста)
         response = ""
         for i, (name, count) in enumerate(name_counts.items(), 1):
-            response += f"[{i}] @~{name} - {count}\n"
+            checkmark = "✅" if name_checkmarks.get(name, False) else ""
+            response += f"[{i}] {name}{checkmark} - {count}\n"
 
-        # Добавляем общее количество
         total_count = sum(name_counts.values())
         response += f"\nОбщее количество - {total_count}"
 
-        # Перебираем всё сообщение и добавляем ровно одну галочку к каждому имени
+        # Создаем измененный текст розыгрыша с галочками для всех имен
         modified_text = ""
-        start_idx = 0
-        for match in re.finditer(r'(@⁨~[^⁩\n]+⁩|@⁨~[^⁩\n]+|@~[^\s\n-]+)', message_text):
-            # Добавляем всё до найденного имени
-            modified_text += message_text[start_idx:match.start()]
-            name = match.group(0)
-            # Удаляем все существующие галочки в строке после имени до конца строки или следующего имени
-            end_idx = message_text.find('\n', match.end()) if message_text.find(
-                '\n', match.end()) != -1 else len(message_text)
-            name_segment = message_text[match.start():end_idx]
-            clean_name_segment = re.sub(r'✅+', '', name_segment)
-            # Добавляем ровно одну галочку сразу после имени
-            modified_text += clean_name_segment + "✅"
-            start_idx = end_idx
+        lines = message_text.split('\n')
+        for line in lines:
+            # Проверяем, содержит ли строка имя участника
+            match = re.search(r'(@⁨~.*?⁩|@~[^\n]*?)(?:\s*✅)?', line)
+            if match:
+                name = match.group(1)
+                # Удаляем старую галочку, если она есть
+                clean_line = re.sub(r'✅', '', line)
+                # Добавляем новую галочку после имени
+                modified_line = clean_line + "✅"
+                modified_text += modified_line + "\n"
+            else:
+                modified_text += line + "\n"
 
-        # Добавляем остальную часть текста после последнего имени
-        modified_text += message_text[start_idx:]
+        # Удаляем лишний перенос строки в конце
+        modified_text = modified_text.rstrip()
 
-        # Отправляем изменённое сообщение с галочками
+        # Отправляем исправленное сообщение с галочками
         await update.message.reply_text(modified_text)
 
-        # Отправляем второй текст с подсчётом
+        # Отправляем второй текст с подсчетом
         await update.message.reply_text(response)
 
     except Exception as e:
         logger.error(f"Ошибка в process_lottery_message: {e}")
         await update.message.reply_text("Ошибка при обработке розыгрыша.")
-
-# Обработка сообщений с ценой
 
 
 async def process_price_message(update: Update, message_text: str):
@@ -136,7 +122,7 @@ async def process_price_message(update: Update, message_text: str):
 
         price = int(price_match.group(1))
         replied_text = update.message.reply_to_message.text
-        matches = re.findall(r'@~([^-\n]+?)\s*-\s*(\d+)', replied_text)
+        matches = re.findall(r'@~([^-\n]+?)\s*[-—]\s*(\d+)', replied_text)
 
         if not matches:
             await update.message.reply_text("Не удалось распознать список с номерками.")
@@ -150,15 +136,11 @@ async def process_price_message(update: Update, message_text: str):
             total_sum += total
             result += f"@~{name.strip()} — {count} × {price} = {total}₽\n"
 
-        # Отправка результата
         await update.message.reply_text(result.strip())
-        # Отправка общей суммы
         await update.message.reply_text(f"💰 Общая сумма: {total_sum}₽")
     except Exception as e:
         logger.error(f"Ошибка в process_price_message: {e}")
         await update.message.reply_text("Ошибка при обработке цены.")
-
-# Запуск бота
 
 
 def main():
